@@ -1,8 +1,9 @@
 # go-flume: the design
 
 Research into the Flume 2 water monitor, done on 2026-11-15 from public sources, to decide
-what a Go module for it would be. Nothing is built and nothing here was run against a
-device. The decisions at the end are open.
+what a Go module for it would be, with what one bridge was then seen to do on its network.
+The module is a client of Flume's cloud API first; reading the bridge locally is parked
+([issue 3](https://github.com/duncanite/go-flume/issues/3)).
 
 In short: a Flume is a cloud product. Its one supported interface is a REST API on
 Flume's servers. The bridge has no documented interface on the LAN. The traffic between
@@ -90,6 +91,20 @@ Assistant's integration uses, and
 republishes it to MQTT and whose README lists what Home Assistant's integration leaves
 out: the sensor's battery, the device's connection state, the leak history.
 
+### Seen on one bridge
+
+A Flume 2 bridge, watched from its own network on 2026-11-15:
+
+- It resolves `mqtt.flumewater.com` and `0.pool.ntp.org`, both as A records, through the
+  resolver its network gives it. The write-up's bridge dialled
+  `mqtt.prod.flumetech.com`: the firmware may not be the one described there.
+- The network's traffic classifier labels its traffic MQTT.
+- It listens on no TCP port. A scan of all 65,535 found none open: 61,695 refused, and
+  3,840 gave no answer under one retry at a thousand probes a second, which reads as
+  probes it dropped. UDP was not scanned.
+
+Not seen: the port it connects to, and anything inside the traffic.
+
 ## Three ways in
 
 | | The cloud API | The bridge's MQTT | The radio |
@@ -128,25 +143,28 @@ What Matter has for water, read in the reference implementation,
 So a Matter bridge for a Flume would carry the leak flag and lose the consumption, which
 is what the device is bought for.
 
-## What this module would be
+## What this module is
 
-Not decided. The options, smallest first:
+A client of the cloud API, first. The options were, smallest first:
 
 1. **A client of the cloud API**, a library and a command like the other device modules:
    the token, the devices, the queries, the alerts, the sensor's battery and connection.
    Credentials from the environment. A reading every minute or two fits the hourly
-   limit. It stops when Flume's service or its terms do.
+   limit. It stops when Flume's service or its terms do. **Taken**: it is the supported
+   interface and the smallest piece, and its types for readings, alerts and device state
+   are what a local reader would hand over too.
 2. **A reader of the bridge's MQTT**, in place of flumewatch or beside it: the relay, the
    decryption, the messages as types. It needs the key from the bridge, a redirect on
-   the network, and a pulse-to-volume factor measured on the meter. It gives up the
-   bridge's firmware updates.
+   the network, and a pulse-to-volume factor measured on the meter. Flume is reported to
+   say such a bridge gets no firmware updates. **Parked** in
+   [issue 3](https://github.com/duncanite/go-flume/issues/3), with its steps.
 3. **The radio, or a Matter device.** Neither is proposed: the first rests on a weakness
    being closed, the second cannot carry the data.
 
 ## Not verified
 
-- Nothing above was observed on a device. The bridge's LAN side was not examined: which
-  ports it listens on, if any, is not known. A client-only ESP8266 would listen on none.
+- Beyond "Seen on one bridge", nothing above was observed on a device: not the port,
+  not the payloads, not the key.
 - Which hardware generation the MQTT write-up's bridge is. The FCC filings read here are
   the Flume 2's (F2100, F2200); a later sensor (F2600) and a newer product exist.
 - The unit of Matter's flow `MeasuredValue`. From memory of the specification it is
