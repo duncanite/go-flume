@@ -69,9 +69,30 @@
 golangci:
   linters:
     settings:
+      depguard:
+        rules:
+          main:
+            # What the command is built on: the house application toolkit
+            # for its process and its transport, and the CLI framework.
+            # The library is the standard library alone.
+            allow:
+              - github.com/mycophonic/primordium
+              - github.com/alecthomas/kong
       tagliatelle:
         # Every JSON tag in this module is a key of Flume's API, which
         # writes its keys in snake case.
         case:
           rules:
             json: snake
+      wrapcheck:
+        # The module's own packages wrap every error with its context at
+        # the call that failed; a caller re-wrapping each one would say
+        # the same thing twice.
+        ignore-package-globs:
+          - github.com/duncanite/go-flume/*
+
+commands:
+  unshipped:
+    # Built and run from the tree until it has been run against Flume's
+    # servers; no release ships it yet.
+    - ./cmd/flume

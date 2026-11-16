@@ -168,15 +168,25 @@ A client of the cloud API, first. The options were, smallest first:
   only.
 - `flume/flumetest`: Flume's API for tests, an HTTP server answering those routes in the
   documentation's envelope and with its examples, recording what arrived.
-
-A command over the library is the next piece.
+- `cmd/flume` and `internal/cli`: the command, kong under primordium's process setup:
+  `devices`, `flow`, `usage`, `alerts`. A command given no sensor takes the account's
+  only one.
 
 ## Decisions
 
 - **The contract is the documentation.** The client is written against
-  flumetech.readme.io and tested against a fake built from the same pages. It has not
-  been run against Flume's servers: the first run with an account's credentials is what
-  will say where the pages and the service differ.
+  flumetech.readme.io and tested against a fake built from the same pages. It was then
+  run against Flume's servers, on 2026-11-15, as one account with one bridge and one
+  sensor: the token, `/me`, the devices, the current flow rate, a query by the minute
+  and the usage alerts each answered as the pages say, and the alerts came latest
+  first. The token route refuses credentials that are no account's with a 400 and
+  `invalid_client`. Not run: a query with an operation, units other than gallons, the
+  alert filters, an account with several sensors.
+- **A sensor Flume does not hear still gets answers.** For one long silent, the flow
+  route says no water is running, at the present minute, and a query gives zeros. When
+  what is asked reaches past the last time the sensor was heard, the command says first
+  that nothing after that time is a measurement; the library returns what Flume said,
+  and `Device.Connected` and `Device.LastSeen` are there to ask.
 - **`/me`, not the user's id.** The documentation lets `/me` stand for `/users/{id}`, so
   the client does not decode the token to learn an id.
 - **The password again, not the refresh token.** A token lasts a week. When it nears its
@@ -189,7 +199,14 @@ A command over the library is the next piece.
   converts both ways; it defaults to the machine's own.
 - **The documented host.** PyFlume calls `api.flumetech.com` and a route,
   `/devices/{id}/leaks/active`, that the documentation does not list. The client uses
-  `api.flumewater.com` and documented routes only; the host is an option.
+  `api.flumewater.com` and documented routes only; the host is an option. Both hosts
+  refuse the same bad credentials the same way.
+- **Credentials from the environment, and from nowhere else.** The command reads the
+  four from `FLUME_CLIENT_ID`, `FLUME_CLIENT_SECRET`, `FLUME_USERNAME` and
+  `FLUME_PASSWORD`. No flag takes one, so none lands in a shell's history or a process
+  list. A client, by value or by pointer, and the credentials print as a fixed word
+  however they are formatted or logged; the one way left is a `Credentials` kept in an
+  unexported field of another struct, which `fmt` prints without asking it.
 - **No retry.** At the hourly limit the client returns the refusal: 120 requests an hour
   is the caller's budget to spend.
 - **The first page.** Devices and alerts are the first fifty; nothing follows the
