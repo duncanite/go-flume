@@ -161,6 +161,40 @@ A client of the cloud API, first. The options were, smallest first:
 3. **The radio, or a Matter device.** Neither is proposed: the first rests on a weakness
    being closed, the second cannot carry the data.
 
+## Shape
+
+- `flume`: the client of the cloud API. One `Client` for one account: the devices, a
+  sensor's readings by query, whether water runs now, the usage alerts. Standard library
+  only.
+- `flume/flumetest`: Flume's API for tests, an HTTP server answering those routes in the
+  documentation's envelope and with its examples, recording what arrived.
+
+A command over the library is the next piece.
+
+## Decisions
+
+- **The contract is the documentation.** The client is written against
+  flumetech.readme.io and tested against a fake built from the same pages. It has not
+  been run against Flume's servers: the first run with an account's credentials is what
+  will say where the pages and the service differ.
+- **`/me`, not the user's id.** The documentation lets `/me` stand for `/users/{id}`, so
+  the client does not decode the token to learn an id.
+- **The password again, not the refresh token.** A token lasts a week. When it nears its
+  end the client asks for another by the password grant: it holds the password either
+  way, so the refresh grant would be a second path for nothing.
+- **No token kept on disk.** The credentials come to the process and stay in it; a saved
+  token would be a secret in a file.
+- **Instants in, instants out.** The API takes a range, and gives a reading's time, as a
+  wall clock in the device's zone with no offset. The client is told that zone once and
+  converts both ways; it defaults to the machine's own.
+- **The documented host.** PyFlume calls `api.flumetech.com` and a route,
+  `/devices/{id}/leaks/active`, that the documentation does not list. The client uses
+  `api.flumewater.com` and documented routes only; the host is an option.
+- **No retry.** At the hourly limit the client returns the refusal: 120 requests an hour
+  is the caller's budget to spend.
+- **The first page.** Devices and alerts are the first fifty; nothing follows the
+  pagination links.
+
 ## Not verified
 
 - Beyond "Seen on one bridge", nothing above was observed on a device: not the port,
@@ -174,8 +208,9 @@ A client of the cloud API, first. The options were, smallest first:
   the enum itself was not read.
 - How late the cloud API's readings are. One Home Assistant user's automation allows two
   and a half minutes; Flume states no figure in what was read.
-- The full list of API routes and their fields. The reference's introduction was read,
-  not each route; the routes named above are from the guides and from PyFlume's modules.
+- The API routes the client does not call: locations, budgets, subscriptions,
+  notifications, event rules. Their reference pages were not read; those of the token,
+  the devices, the query, the flow rate and the usage alerts were.
 - Whether a paid Flume plan is needed for any route.
 - The radio details beyond the filing and one summary of the original article; the
   original was not read.
