@@ -54,6 +54,36 @@ func lines(out string) [][]string {
 	return rows
 }
 
+// TestTheServicesWords: what the service says is shown and never obeyed. A
+// rule's name and a device's product, with a line's end, a tab, a
+// direction mark and an escape sequence in them, are written out in the
+// listings, and forge no line and no column of the command's.
+func TestTheServicesWords(t *testing.T) {
+	t.Parallel()
+
+	const (
+		// As JSON writes it, and as the command shows it.
+		hostile = `Rule\nflume: all is well\t\u202e\u001b[2J`
+		shown   = `Rule\nflume: all is well\t\u202e\x1b[2J`
+	)
+
+	api := started(t)
+	api.Alerts = json.RawMessage(`[{"id": 5, "device_id": "` + flumetest.SensorID + `",
+		"triggered_datetime": "2017-03-06T10:00:00.000Z", "flume_leak": false, "event_rule_name": "` + hostile + `"}]`)
+	api.Devices = json.RawMessage(`[{"id": "` + flumetest.SensorID + `", "type": 2, "connected": true,
+		"battery_level": "` + hostile + `", "product": "` + hostile + `"}]`)
+
+	out, status := run(t, api, environment(), "alerts")
+	if status != cli.ExitOK || strings.Count(out, "\n") != 2 || strings.Count(out, shown) != 1 {
+		t.Errorf("alerts with a hostile rule exits %d saying\n%s", status, out)
+	}
+
+	out, status = run(t, api, environment(), "devices")
+	if status != cli.ExitOK || strings.Count(out, "\n") != 2 || strings.Count(out, shown) != 2 {
+		t.Errorf("devices with hostile words exits %d saying\n%s", status, out)
+	}
+}
+
 // TestTheCommands: each command against the account, its output as a
 // person reads it; a command that is given no sensor finds the account's
 // only one.
@@ -79,8 +109,8 @@ func TestTheCommands(t *testing.T) {
 		{[]string{"usage"}, "FROM GALLONS\n2026-03-01 00:00 12.50\n2026-03-01 01:00 0.00"},
 		{[]string{"alerts"}, strings.Join([]string{
 			"ID RAISED LEAK RULE DEVICE",
-			`5 2017-03-06 10:00 no "Custom Rule" ` + flumetest.SensorID,
-			`4 2017-03-06 10:00 yes "Flume Smart Leak Rule" ` + flumetest.SensorID,
+			"5 2017-03-06 10:00 no Custom Rule " + flumetest.SensorID,
+			"4 2017-03-06 10:00 yes Flume Smart Leak Rule " + flumetest.SensorID,
 		}, "\n")},
 	} {
 		out, status := run(t, api, environment(), step.args...)

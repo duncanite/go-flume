@@ -174,6 +174,13 @@ A client of the cloud API, first. The options were, smallest first:
 
 ## Decisions
 
+- **The command shows the service's text and never obeys it.** A rule's name, a device's
+  product and what the service says in refusing are whatever the service, or whoever
+  answers for it, wrote. Every line the command prints goes through `internal/terminal`,
+  which writes out, as Go writes them in a string, each character a terminal would not
+  simply draw: a control or a direction mark, a line's end, a tab, a byte that is no
+  text. A test reads the command's source and fails on a line printed any other way,
+  since no test of what is printed could name every line there will be.
 - **The contract is the documentation.** The client is written against
   flumetech.readme.io and tested against a fake built from the same pages. It was then
   run against Flume's servers, on 2026-11-15, as one account with one bridge and one
