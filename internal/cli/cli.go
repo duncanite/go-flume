@@ -17,6 +17,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/duncanite/go-flume/flume"
+	"github.com/duncanite/go-flume/internal/terminal"
 )
 
 // Exit statuses.
@@ -115,7 +116,7 @@ func Run(
 		kong.BindTo(ctx, (*context.Context)(nil)),
 	)
 	if err != nil {
-		fmt.Fprintln(stderr, "flume:", err)
+		terminal.Printf(stderr, "flume: %s\n", err)
 
 		return ExitError
 	}
@@ -132,7 +133,7 @@ func Run(
 	}
 
 	if err != nil {
-		fmt.Fprintln(stderr, "flume:", err)
+		terminal.Printf(stderr, "flume: %s\n", err)
 
 		return ExitError
 	}
@@ -213,9 +214,12 @@ func (root *rootCommand) only(ctx context.Context, named string, until time.Time
 	switch found := sensors[0]; {
 	case found.Connected:
 	case found.LastSeen.IsZero():
-		fmt.Fprintln(root.out, "the sensor is not connected and was never heard: nothing that follows is a measurement")
+		terminal.Printf(
+			root.out,
+			"the sensor is not connected and was never heard: nothing that follows is a measurement\n",
+		)
 	case until.IsZero() || until.After(found.LastSeen):
-		fmt.Fprintf(
+		terminal.Printf(
 			root.out,
 			"the sensor is not connected: nothing after %s, when it was last heard, is a measurement\n",
 			found.LastSeen.In(root.location).Format(clock),
@@ -233,7 +237,7 @@ func (*devicesCommand) Run(ctx context.Context, root *rootCommand) error {
 
 	table := tabwriter.NewWriter(root.out, 0, 0, 2, ' ', 0)
 
-	fmt.Fprintln(table, "ID\tKIND\tPRODUCT\tCONNECTED\tLAST SEEN\tBATTERY\tBRIDGE")
+	terminal.Printf(table, "ID\tKIND\tPRODUCT\tCONNECTED\tLAST SEEN\tBATTERY\tBRIDGE\n")
 
 	for _, device := range devices {
 		kind := "sensor"
@@ -246,7 +250,7 @@ func (*devicesCommand) Run(ctx context.Context, root *rootCommand) error {
 			seen = device.LastSeen.In(root.location).Format(clock)
 		}
 
-		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		terminal.Printf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			device.ID, kind, device.Product, yesNo(device.Connected), seen,
 			dash(device.BatteryLevel), dash(device.BridgeID))
 	}
@@ -266,12 +270,12 @@ func (cmd *flowCommand) Run(ctx context.Context, root *rootCommand) error {
 	}
 
 	if !flow.Active {
-		fmt.Fprintf(root.out, "no water is running (measured %s)\n", flow.At.In(root.location).Format(clock))
+		terminal.Printf(root.out, "no water is running (measured %s)\n", flow.At.In(root.location).Format(clock))
 
 		return nil
 	}
 
-	fmt.Fprintf(root.out, "water is running: %.2f gallons a minute (measured %s)\n",
+	terminal.Printf(root.out, "water is running: %.2f gallons a minute (measured %s)\n",
 		flow.GallonsPerMinute, flow.At.In(root.location).Format(clock))
 
 	return nil
@@ -307,7 +311,7 @@ func (cmd *usageCommand) Run(ctx context.Context, root *rootCommand) error {
 
 	if cmd.Total {
 		for _, reading := range readings[query.ID] {
-			fmt.Fprintf(root.out, "%.2f %s %s\n", reading.Value, cmd.Units, asked.said)
+			terminal.Printf(root.out, "%.2f %s %s\n", reading.Value, cmd.Units, asked.said)
 		}
 
 		return nil
@@ -315,10 +319,10 @@ func (cmd *usageCommand) Run(ctx context.Context, root *rootCommand) error {
 
 	table := tabwriter.NewWriter(root.out, 0, 0, 2, ' ', tabwriter.AlignRight)
 
-	fmt.Fprintf(table, "FROM\t%s\t\n", strings.ToUpper(cmd.Units))
+	terminal.Printf(table, "FROM\t%s\t\n", strings.ToUpper(cmd.Units))
 
 	for _, reading := range readings[query.ID] {
-		fmt.Fprintf(table, "%s\t%.2f\t\n", reading.Time.In(root.location).Format(clock), reading.Value)
+		terminal.Printf(table, "%s\t%.2f\t\n", reading.Time.In(root.location).Format(clock), reading.Value)
 	}
 
 	return flush(table)
@@ -379,18 +383,17 @@ func (cmd *alertsCommand) Run(ctx context.Context, root *rootCommand) error {
 	}
 
 	if len(alerts) == 0 {
-		fmt.Fprintln(root.out, "no alert")
+		terminal.Printf(root.out, "no alert\n")
 
 		return nil
 	}
 
 	table := tabwriter.NewWriter(root.out, 0, 0, 2, ' ', 0)
 
-	fmt.Fprintln(table, "ID\tRAISED\tLEAK\tRULE\tDEVICE")
+	terminal.Printf(table, "ID\tRAISED\tLEAK\tRULE\tDEVICE\n")
 
 	for _, alert := range alerts {
-		// The rule's name is the account's own text.
-		fmt.Fprintf(table, "%d\t%s\t%s\t%q\t%s\n",
+		terminal.Printf(table, "%d\t%s\t%s\t%s\t%s\n",
 			alert.ID, alert.Triggered.In(root.location).Format(clock), yesNo(alert.Leak), alert.Rule, alert.DeviceID)
 	}
 
