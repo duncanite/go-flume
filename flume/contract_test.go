@@ -44,6 +44,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -142,6 +143,169 @@ func TestTokenIsRenewed(t *testing.T) {
 	if logins != 2 || requests[3].Authorization != "Bearer token-2" {
 		t.Fatalf("two calls on a thirty-second token made %d logins, the last under %q",
 			logins, requests[3].Authorization)
+	}
+}
+
+// TestTokenKept: the token a Client holds is read from it and given to
+// another, which asks Flume for none; one at its end, and one Flume
+// refuses, are asked for again, once, and a token Flume refuses as soon as
+// it gave it is not asked for again, nor is one under a 403. A token whose
+// life Flume did not tell is sent until it is refused. A Token formatted
+// shows nothing of itself.
+func TestTokenKept(t *testing.T) {
+	t.Parallel()
+
+	first, api := connected(t)
+	ctx := t.Context()
+
+	if token, held := first.Token(); held {
+		t.Fatalf("Token before any request = %+v", token)
+	}
+
+	if _, err := first.Devices(ctx); err != nil {
+		t.Fatalf("Devices: %v", err)
+	}
+
+	token, held := first.Token()
+	if left := time.Until(token.Expires); !held || token.Access != "token-1" ||
+		left < 7*24*time.Hour-time.Minute || left > 7*24*time.Hour {
+		t.Fatalf("Token after a request: held %t, %q, ending in %s", held, token.Access, left)
+	}
+
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q"} {
+		if printed := fmt.Sprintf(verb, token) + fmt.Sprintf(verb, &token); strings.Contains(printed, "token-1") ||
+			strings.Contains(token.LogValue().String(), "token-1") {
+			t.Errorf("a Token under %s shows itself: %s", verb, printed)
+		}
+	}
+
+	restored := func(given flume.Token) *flume.Client {
+		return flume.New(account(), flume.Options{BaseURL: api.URL, HTTP: api.Client(), Token: given})
+	}
+
+	asks := func(what string, client *flume.Client, tokens int) {
+		t.Helper()
+
+		for range 2 {
+			if _, err := client.Devices(ctx); err != nil {
+				t.Fatalf("Devices, %s: %v", what, err)
+			}
+		}
+
+		if _, logins := api.Received(); logins != tokens {
+			t.Errorf("%s: %d tokens asked for so far, want %d", what, logins, tokens)
+		}
+	}
+
+	asks("a Client given the token another holds", restored(token), 1)
+	asks("a Client given it with no end told", restored(flume.Token{Access: token.Access}), 1)
+	asks("a Client given a token at its end", restored(flume.Token{Access: token.Access, Expires: time.Now()}), 2)
+
+	// The token Flume gave last is the one it takes now.
+	late := restored(flume.Token{Access: "token-1", Expires: time.Now().Add(time.Hour)})
+	asks("a Client given a token Flume refuses", late, 3)
+
+	if token, held = late.Token(); !held || token.Access != "token-3" {
+		t.Errorf("Token after Flume refused the one given = %q, %t", token.Access, held)
+	}
+
+	// A life that is none is a life not told.
+	api.Lifetime = -time.Second
+	unending := restored(flume.Token{})
+	asks("a Client whose token has no life told", unending, 4)
+
+	if token, held = unending.Token(); !held || !token.Expires.IsZero() {
+		t.Errorf("Token with no life told ends at %s, held %t; want no end", token.Expires, held)
+	}
+
+	// A 403 says nothing against the token: none is asked for.
+	api.Fail = http.StatusForbidden
+
+	if _, err := restored(token).Devices(ctx); !errors.Is(err, flume.ErrCredentials) {
+		t.Errorf("Devices that Flume forbids = %v, want ErrCredentials", err)
+	}
+
+	if _, logins := api.Received(); logins != 4 {
+		t.Errorf("a kept token under a 403: %d tokens asked for so far, want 4", logins)
+	}
+
+	// Flume refuses every token: the one kept is asked for again, once,
+	// and the one it has just given is not.
+	api.Fail = http.StatusUnauthorized
+
+	if _, err := restored(token).Devices(ctx); !errors.Is(err, flume.ErrCredentials) {
+		t.Errorf("Devices under a token Flume refuses, then under another it refuses = %v, want ErrCredentials", err)
+	}
+
+	if _, logins := api.Received(); logins != 5 {
+		t.Errorf("a kept token refused, and the next one too: %d tokens asked for so far, want 5", logins)
+	}
+
+	if _, err := restored(flume.Token{}).Devices(ctx); !errors.Is(err, flume.ErrCredentials) {
+		t.Errorf("Devices under a token refused as soon as given = %v, want ErrCredentials", err)
+	}
+
+	if _, logins := api.Received(); logins != 6 {
+		t.Errorf("a token refused as soon as given: %d tokens asked for so far, want 6", logins)
+	}
+}
+
+// TestTokenRefused: a kept token Flume no longer takes, met by many calls
+// at once, is asked for again once for them all, and each call is
+// answered. When the token cannot be had again, that is the error, and
+// the call is not sent a second time.
+func TestTokenRefused(t *testing.T) {
+	t.Parallel()
+
+	api := flumetest.New()
+	t.Cleanup(api.Close)
+
+	stale := flume.Token{Access: "token-0", Expires: time.Now().Add(time.Hour)}
+	client := flume.New(account(), flume.Options{BaseURL: api.URL, HTTP: api.Client(), Token: stale})
+
+	const callers = 32
+
+	var group sync.WaitGroup
+
+	failed := make(chan error, callers)
+
+	for range callers {
+		group.Go(func() {
+			_, err := client.Devices(t.Context())
+			failed <- err
+		})
+	}
+
+	group.Wait()
+	close(failed)
+
+	for err := range failed {
+		if err != nil {
+			t.Errorf("Devices, one of %d at once under a token Flume no longer takes: %v", callers, err)
+		}
+	}
+
+	if _, logins := api.Received(); logins != 1 {
+		t.Errorf("%d calls at once under a token Flume no longer takes asked for %d tokens, want 1", callers, logins)
+	}
+
+	if token, held := client.Token(); !held || token.Access != "token-1" {
+		t.Errorf("Token after it = %q, %t; want the one Flume gave", token.Access, held)
+	}
+
+	wrong := account()
+	wrong.Password = "not the password"
+
+	before, _ := api.Received()
+
+	_, err := flume.New(wrong, flume.Options{BaseURL: api.URL, HTTP: api.Client(), Token: stale}).Devices(t.Context())
+	if !errors.Is(err, flume.ErrCredentials) || !strings.Contains(err.Error(), "invalid_client") {
+		t.Errorf("Devices under a token and a password Flume refuses = %v, want the token route's refusal", err)
+	}
+
+	if after, _ := api.Received(); len(after)-len(before) != 2 {
+		t.Errorf("a token that could not be had again took %d requests, want the call and the token's",
+			len(after)-len(before))
 	}
 }
 

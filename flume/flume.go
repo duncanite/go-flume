@@ -93,7 +93,34 @@ type Options struct {
 	// a query's range and gives a reading's time as a wall clock there,
 	// with no offset; nil is time.Local.
 	Zone *time.Location
+	// Token is a token to start from, one an earlier Client's Token method
+	// gave; the zero value is none. It is sent until its end, or until
+	// Flume refuses it, and only then is another asked for.
+	Token Token
 }
+
+// Token is an access token Flume gave, and when it ends. It is a secret:
+// formatted or logged, it shows nothing of itself. Its fields are plain
+// and it has no marshaller, so that the program that keeps one between
+// runs can store it; and so a Token marshalled shows itself, which is what
+// a struct holding one does when it is logged as JSON. One kept in an
+// unexported field of another struct is out of reach of these methods
+// too, and fmt prints it as it is.
+//
+// It is the account's: one kept for an account and given to a Client of
+// another's credentials reads the first account for as long as it lasts.
+type Token struct {
+	// Access is the token itself.
+	Access string
+	// Expires is when it ends; zero when Flume did not say.
+	Expires time.Time
+}
+
+// Format keeps the token out of a formatted value, whatever the verb.
+func (Token) Format(state fmt.State, _ rune) { _, _ = io.WriteString(state, "flume token") }
+
+// LogValue keeps it out of a log record.
+func (Token) LogValue() slog.Value { return slog.StringValue("flume token") }
 
 // Client is one account's access to the API. Its methods may be called
 // from several goroutines.
@@ -118,18 +145,41 @@ func (Client) Format(state fmt.State, _ rune) { _, _ = io.WriteString(state, "fl
 type secrets struct {
 	credentials Credentials
 
-	mu      sync.Mutex
-	token   string
-	expires time.Time
+	mu sync.Mutex
+	// token is the token held, and leave when it is no longer sent: a
+	// minute before its end, or never when its life was not told.
+	token Token
+	leave time.Time
+}
+
+// hold keeps a token.
+func (s *secrets) hold(token Token) {
+	s.token, s.leave = token, time.Time{}
+
+	if !token.Expires.IsZero() {
+		s.leave = token.Expires.Add(-renewAhead)
+	}
+}
+
+// usable is whether the token held may be sent: there is one, and it is
+// not at its end. One whose life was not told is sent until Flume refuses
+// it.
+func (s *secrets) usable() bool {
+	return s.token.Access != "" && (s.leave.IsZero() || time.Now().Before(s.leave))
 }
 
 // New is a client for the account the credentials are for. Nothing is
-// sent until a method is called: the first asks for a token, and a call
-// made within a minute of that token's end asks for another, by the
-// password again and not by the refresh token, the password being held
-// either way.
+// sent until a method is called: the first asks for a token, unless
+// Options gave one, and a call made within a minute of that token's end
+// asks for another, by the password again and not by the refresh token,
+// the password being held either way.
+//
+// A program that must not ask for a token at each start keeps the one it
+// has, reading it with Token and giving it back in Options. Where it is
+// kept is that program's business: nothing here writes one anywhere.
 func New(credentials Credentials, opts Options) *Client {
 	state := &secrets{credentials: credentials}
+	state.hold(opts.Token)
 
 	client := &Client{
 		base: opts.BaseURL,
@@ -178,27 +228,55 @@ type grant struct {
 	Password     string `json:"password"`
 }
 
+// Token is the token the Client holds now, and whether it holds one: the
+// one it was given, or the last one Flume gave it. It may be at its end.
+func (c *Client) Token() (Token, bool) {
+	held := c.held()
+
+	held.mu.Lock()
+	defer held.mu.Unlock()
+
+	return held.token, held.token.Access != ""
+}
+
 // call sends one request under the account's token and decodes the
-// answer's data, always a list, into into.
+// answer's data, always a list, into into. A token held from before that
+// Flume answers 401 to is asked for again, once.
 func (c *Client) call(ctx context.Context, method, path string, query url.Values, body, into any) error {
-	token, err := c.bearer(ctx)
+	token, fresh, err := c.bearer(ctx, "")
 	if err != nil {
+		return err
+	}
+
+	err = c.exchange(ctx, method, path, query, body, token, into)
+
+	var refused *refusedError
+	if fresh || !errors.As(err, &refused) || refused.status != http.StatusUnauthorized {
+		return err
+	}
+
+	if token, _, err = c.bearer(ctx, token); err != nil {
 		return err
 	}
 
 	return c.exchange(ctx, method, path, query, body, token, into)
 }
 
-// bearer is the token to send, asked for when there is none or the one
-// held is at its end.
-func (c *Client) bearer(ctx context.Context) (string, error) {
+// bearer is the token to send, and whether it was asked for just now. One
+// is asked for when there is none, when the one held is at its end, or
+// when the one held is spent, the token Flume has just refused.
+func (c *Client) bearer(ctx context.Context, spent string) (string, bool, error) {
 	held := c.held()
 
 	held.mu.Lock()
 	defer held.mu.Unlock()
 
-	if held.token != "" && time.Now().Before(held.expires.Add(-renewAhead)) {
-		return held.token, nil
+	if spent != "" && held.token.Access == spent {
+		held.hold(Token{})
+	}
+
+	if held.usable() {
+		return held.token.Access, false, nil
 	}
 
 	var granted []tokens
@@ -211,17 +289,21 @@ func (c *Client) bearer(ctx context.Context) (string, error) {
 		Password:     held.credentials.Password,
 	}, "", &granted)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	if len(granted) == 0 || granted[0].AccessToken == "" {
-		return "", fmt.Errorf("%w: the token route gave no token", ErrAnswer)
+		return "", false, fmt.Errorf("%w: the token route gave no token", ErrAnswer)
 	}
 
-	held.token = granted[0].AccessToken
-	held.expires = time.Now().Add(time.Duration(granted[0].ExpiresIn) * time.Second)
+	given := Token{Access: granted[0].AccessToken}
+	if life := time.Duration(granted[0].ExpiresIn) * time.Second; life > 0 {
+		given.Expires = time.Now().Add(life)
+	}
 
-	return held.token, nil
+	held.hold(given)
+
+	return given.Access, true, nil
 }
 
 // exchange sends one request, with token when there is one, and decodes
@@ -343,8 +425,24 @@ func refusal(method, path string, status int, answer *envelope) error {
 		said += " " + details
 	}
 
-	return fmt.Errorf("%w: %s %s: HTTP %d, code %d: %s", class, method, path, status, answer.Code, said)
+	return &refusedError{
+		class:  class,
+		status: status,
+		said:   fmt.Sprintf("%s %s: HTTP %d, code %d: %s", method, path, status, answer.Code, said),
+	}
 }
+
+// refusedError is an answer that is not a success: one of the package's
+// errors, with the status it came under and what Flume said.
+type refusedError struct {
+	class  error
+	status int
+	said   string
+}
+
+func (r *refusedError) Error() string { return r.class.Error() + ": " + r.said }
+
+func (r *refusedError) Unwrap() error { return r.class }
 
 // only is the one element a route that answers one thing wraps in its
 // list.
