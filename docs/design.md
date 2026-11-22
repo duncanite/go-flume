@@ -199,8 +199,16 @@ A client of the cloud API, first. The options were, smallest first:
 - **The password again, not the refresh token.** A token lasts a week. When it nears its
   end the client asks for another by the password grant: it holds the password either
   way, so the refresh grant would be a second path for nothing.
-- **No token kept on disk.** The credentials come to the process and stay in it; a saved
-  token would be a secret in a file.
+- **The library keeps no token on disk, and lets its caller keep one.** It writes nothing
+  anywhere. `Client.Token` gives the token held, with when it ends, and `Options.Token`
+  takes one to start from: a program that restarts keeps the token where its host lends
+  it storage, and asks Flume for none until that one ends. A token given is sent until a
+  minute before its end, or until Flume answers 401 to it, and is then asked for again,
+  once; a 401 to a token Flume has just given is the caller's to hear. A `Token` shows
+  nothing of itself formatted or logged, and has no marshaller, so that it can be
+  stored. The refresh token is not carried: it would be a second secret to keep, for
+  what the password, held either way, already does. The command keeps none: it asks at
+  each run.
 - **Instants in, instants out.** The API takes a range, and gives a reading's time, as a
   wall clock in the device's zone with no offset. The client is told that zone once and
   converts both ways; it defaults to the machine's own.
